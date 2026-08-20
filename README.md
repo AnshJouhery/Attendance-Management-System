@@ -1,59 +1,115 @@
-# 📸 Face Recognition Attendance Management System
+# ATTEND//OS — Classroom Attendance System
 
-🚀 A smart attendance management system developed using Python, OpenCV, and the Face Recognition library to automate attendance tracking through real-time facial recognition.
+A face-recognition attendance system with a live web dashboard: teacher
+login, live camera feed, per-student attendance, a weekly trend chart,
+and unknown-face alerts.
 
-The system captures live video from a webcam, identifies registered individuals, and automatically records attendance with accurate date and time stamps. By eliminating manual attendance processes, the system improves efficiency, accuracy, and reliability. It also prevents duplicate attendance entries for the same person on the same day and detects unknown individuals for further verification.
+This is a rebuild of the original `attendence.py` script, split into a
+Flask backend + browser dashboard instead of a `cv2.imshow` window.
 
-## ✨ Features
+## What changed vs. the original script
 
-✅ Real-Time Face Detection & Recognition
-✅ Automatic Attendance Recording
-✅ Date & Time Based Logging
-✅ Duplicate Attendance Prevention
-✅ Unknown Face Detection & Storage
-✅ CSV-Based Attendance Management
-✅ Live Webcam Integration
-✅ Performance Monitoring (FPS Display)
-✅ Contactless Attendance Tracking
-✅ Easy Registration of New Individuals
+| Issue in the original | Fix here |
+|---|---|
+| CSV parsed by hand, no locking | SQLite (`database.py`) with proper tables and `UNIQUE` constraints |
+| `argmin` accepted the "least bad" match even if it was far away | Explicit `MATCH_TOLERANCE` distance threshold in `attendance_engine.py` |
+| One unknown-face image saved almost every frame a stranger was in view | Cooldown + encoding-similarity de-duplication (`UNKNOWN_DEDUP_SECONDS`) |
+| `unknown_faces/` assumed to exist | Created automatically on startup |
+| Only the first face in one reference photo per person | `images/<Name>/` folders with multiple photos are averaged |
+| Blocking `while True` + `cv2.imshow` loop, can't serve a web page | Camera runs in a background thread; Flask routes just read shared state |
+| No camera-open check | `cap.isOpened()` checked, surfaced to the dashboard as "camera unavailable" |
+| No teacher login / access control | Flask session-based login (see note on credentials below) |
 
-## 🛠️ Technologies Used
+Not fixed (out of scope, worth knowing about): there's still no liveness
+/ anti-spoofing check, so a photo or video of someone can be matched.
+Face encodings also aren't encrypted at rest — treat `attendance.db`
+and `images/` as sensitive biometric data.
 
-🐍 Python
-📷 OpenCV
-👤 Face Recognition Library
-📊 NumPy
-📁 CSV File Handling
+## Project structure
 
-## ⚙️ How It Works
+```
+attendance_project/
+├── app.py                 # Flask app: routes, login, API
+├── attendance_engine.py   # camera capture + recognition (background thread)
+├── database.py             # SQLite schema + queries
+├── requirements.txt
+├── static/
+│   └── dashboard.html      # the whole frontend (single file)
+├── images/                 # put known faces here (see below)
+└── unknown_faces/          # unrecognized-face snapshots land here
+```
 
-1️⃣ Add images of registered individuals to the **images/** folder. Each image filename is treated as the person's name.
+## 1. Install dependencies
 
-2️⃣ Run the Python application.
+```bash
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-3️⃣ The system loads the images and generates facial encodings for all registered individuals.
+`face_recognition` depends on `dlib`, which needs CMake and a C++
+compiler to build. On Windows, installing the prebuilt wheel or using
+WSL is usually easiest; on macOS, `brew install cmake` first; on
+Ubuntu/Debian, `sudo apt install cmake build-essential`.
 
-4️⃣ The webcam starts capturing live video and continuously scans for faces.
+## 2. Add known faces
 
-5️⃣ When a face is detected, the system compares it with the registered faces stored in the **images/** folder.
+Either:
 
-6️⃣ If a match is found:
+- **One photo per person:** `images/Aarav Sharma.jpg` — the filename
+  (minus extension) becomes the student's name.
+- **Multiple photos per person (recommended, more accurate):**
+  ```
+  images/
+    Aarav Sharma/
+      photo1.jpg
+      photo2.jpg
+    Priya Nair/
+      photo1.jpg
+  ```
+  All photos in a folder are encoded and averaged into one reference.
 
-* The person's name is displayed on the screen.
-* Attendance is automatically marked.
-* The attendance record is saved in **attendance.csv** with the current date and time.
-* Duplicate attendance entries for the same day are prevented.
+Use clear, front-facing, well-lit photos — recognition quality depends
+entirely on these.
 
-7️⃣ If no match is found:
+## 3. Run it
 
-* The face is labeled as **UNKNOWN**.
-* The captured image is stored in the **unknown_faces/** folder for future review and verification.
+```bash
+python app.py
+```
 
-## 📂 Output Files
+Open **http://localhost:5000**. Log in with:
 
-📄 **attendance.csv** – Stores attendance records with Name, Time, and Date.
-📁 **unknown_faces/** – Stores images of unrecognized individuals detected by the system.
+- Teacher ID: `teacher`
+- Password: `demo123`
 
-## 🎯 Objective
+(Change these in the `TEACHERS` dict in `app.py`. For anything beyond
+a local demo, replace it with a real user table and hashed passwords
+— `werkzeug.security.generate_password_hash` — rather than plaintext.)
 
-To automate attendance tracking using facial recognition technology, reducing manual effort, improving accuracy, and providing a simple and efficient attendance management solution.
+If no webcam is available, the dashboard still loads; the camera panel
+shows "camera unavailable" and everything else (records, stats,
+alerts) still works against whatever is already in the database.
+
+## 4. Using the dashboard
+
+- **Dashboard** — live feed, today's present/absent counts, unknown-face
+  count, a recognition log, a 7-day attendance chart, and a preview of
+  recent unknown-face alerts.
+- **Attendance Records** — full searchable/filterable log of every
+  attendance entry (present vs. late).
+- **Unknown Alerts** — every unidentified-face snapshot, with a "mark
+  reviewed" action.
+
+Everything on the dashboard is read from the database and refreshed
+every 3 seconds — it's not a simulation, it reflects what the camera
+thread actually recognized.
+
+## Notes on running this for a real class
+
+- `app.run(debug=True)` is a local dev server — don't expose it to the
+  internet as-is. Run it behind a real WSGI server (gunicorn/waitress)
+  and HTTPS if it needs to be reachable beyond one machine.
+- `MATCH_TOLERANCE` and `UNKNOWN_DEDUP_SECONDS` in
+  `attendance_engine.py` are tunable — lower `MATCH_TOLERANCE` (e.g.
+  0.45) for stricter matching if you're seeing false positives.
